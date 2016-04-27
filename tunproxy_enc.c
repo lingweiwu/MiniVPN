@@ -12,11 +12,6 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
  */
- 
- /* Edited:
-  * tunproxy_enc.c --- add encryption/HMAC for UDP tunnel
-  * 2016 Spring, Syracuse University
-  */
 
 #include <stdio.h>
 #include <unistd.h>
@@ -46,50 +41,57 @@
 
 char MAGIC_WORD[] = "Wazaaaaaaaaaaahhhh !";
 
-
-int do_crypt(char *input, int inlen, char *output, int do_encrypt)
+/*
+     * Encrypt/decrypt 
+     * 
+     * Succeed:
+     * return output length
+     * Failed:
+     * return 0
+     */
+int do_crypt(char *input, int inlen, char *output, const unsigned char *key, const unsigned char *iv, int do_encrypt)
 {
-    unsigned char outbuf[1024];
+    unsigned char outbuf[1024 + EVP_MAX_BLOCK_LENGTH];
     int outlen, padlen;
-    EVP_CIPHER_CTX *ctx;
+    EVP_CIPHER_CTX ctx;
 
-    unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
-    unsigned char iv[16];
+    //unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
+    //unsigned char iv[16];
 
-    memset(iv,0,sizeof(iv));
+    //memset(iv,0,sizeof(iv));
 
-    memset(outbuf,0,sizeof(outbuf));
-
-    ctx = EVP_CIPHER_CTX_new();
+    EVP_CIPHER_CTX_init(&ctx);
     
-     //do_encrypt = 0:1? decrypt,encrypt.
-    EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, iv, do_encrypt);
+    EVP_CipherInit_ex(&ctx, EVP_aes_128_cbc(), NULL, NULL, NULL, do_encrypt);
+    OPENSSL_assert(EVP_CIPHER_CTX_key_length(&ctx) == 16);
+    OPENSSL_assert(EVP_CIPHER_CTX_iv_length(&ctx) == 16);
 
-    OPENSSL_assert(EVP_CIPHER_CTX_key_length(ctx) == 16);
-    OPENSSL_assert(EVP_CIPHER_CTX_iv_length(ctx) == 16);
-
+	EVP_CipherInit_ex(&ctx, NULL, NULL, key, iv, do_encrypt);
+	
+	//printf("-----CRYPT: inlen:%d\n\n",inlen);
+	
     /* encrypt/decrpyt the plaintext*/
-	if(!EVP_CipherUpdate(ctx, outbuf, &outlen, input, inlen)) 
+	if(!EVP_CipherUpdate(&ctx, outbuf, &outlen, input, inlen)) 
 	{
 		/* Error */
-        EVP_CIPHER_CTX_free(ctx);
-        return 0;
+        EVP_CIPHER_CTX_cleanup(&ctx);
+        return -1;
 	}
 
 	/* encrypt/decrpyt the padding part*/
-	if(!EVP_CipherFinal_ex(ctx, outbuf + outlen, &padlen))	
+	if(!EVP_CipherFinal_ex(&ctx, outbuf + outlen, &padlen))	
 	{
 		/* Error */
-		EVP_CIPHER_CTX_free(ctx);
-		return 0;
+		EVP_CIPHER_CTX_cleanup(&ctx);
+		return -1;
 	}
 
 	outlen += padlen; // total length of ciphertext
 
 	memcpy(output,outbuf,outlen);
-
-	EVP_CIPHER_CTX_free(ctx);
-    return 1;
+	//printf("-----CRYPT: outlen:%d\n\n",outlen);
+	EVP_CIPHER_CTX_cleanup(&ctx);
+    return outlen;
 }
 
 
@@ -108,65 +110,53 @@ const unsigned char *data,      /* pointer to data stream        */
 int                 data_len,   /* length of data stream         */
 const unsigned char *key,       /* pointer to authentication key */
 int                 key_len,    /* length of authentication key  */
-char *output)
+char 				*output)
 {
-    //HMAC_CTX *ctx;
     unsigned char md_value[EVP_MAX_MD_SIZE];  //32 byte
     unsigned int md_len;
     
-    HMAC(EVP_sha256(), key, key_len, data, data_len, md_value, md_len);
-
-    // HMAC_Init_ex(ctx,key,strlen(key),EVP_sha256(),NULL);
-
-    // /*hash the data*/
-    // if(!HMAC_Update(ctx, data, data_len)) {
-    //     /* Error */
-    //     HMAC_CTX_free(ctx);
-    //     return 0;
-    // }
-
-    // /*hash the padding*/
-    // if(!HMAC_Final(ctx, md_value, md_len)) {
-    //     /* Error */
-    //     HMAC_CTX_free(ctx);
-    //     return 0;
-    // }
+    HMAC(EVP_sha256(), key, key_len, data, data_len, md_value, &md_len);
 
     memcpy(output,md_value,md_len);
 
-    //HMAC_CTX_free(ctx);
     return 1;
 }
 
 void test_foo () {
-	char testbuf[] = {'T','h','i','s',' ','i','s',' ','a',' ','t','o','p',' ','s','e','c','r','e','t','.'};
-	char test_cipher[2000];
-	char test_decipher[2000];
-	int len, len2;
-    char test_hash[32];
+	//char testbuf[] = "asdfasdfasfdf  afds sdafs";
+	char testbuf[] = "Ishmael believes he has signed onto a routine commission aboard a normal whaling vessel, but he soon learns that Captain Ahab is not guiding the Pequod in the simple pursuit of commerce but is seeking one specific whale, Moby-Dick, a great while whale infamous for his giant size and his ability to destroy the whalers that seek him. Captain Ahab's wooden leg is the result of his first encounter with the whale, when he lost both leg and ship. After the ship sails it becomes clear that Captain Ahab is bent on revenge and he intends to get Moby-Dick.";
+	char test_cipher[1024];
+	char test_decipher[1024];
+	int len, len2, len3, i;
+    char test_hash[32],test_hash2[32];
 
     unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
+    unsigned char iv[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x10,0x11,0x12,0x13,0x14,0x15,0x16};
 
 	printf("Before cipher, testbuf is %s\n",testbuf);
 
 	len = strlen(testbuf);
-	if (do_crypt(testbuf,len, test_cipher, ENC)) {
-		printf ("Test encrypt succeeded!\n");
-		printf("During, test_cipher is %s\n",test_cipher);
-	} else {printf ("Test encrypt error!\n");}
-	
-	len2 = strlen(test_cipher);
-	do_crypt(test_cipher,len2, test_decipher, DEC);
-
-	printf("After decipher, test_decipher is %s \n",test_decipher);
+	len2 = do_crypt(testbuf,len, test_cipher, key, iv, ENC);
+	printf("TEST: len2 is %d \n",len2);
+	printf("TEST: After cipher, test_cipher is %s \n",test_cipher);
+	len3 = do_crypt(test_cipher,len2, test_decipher, key, iv, DEC);
+	printf("TEST: After decipher, test_decipher is %s \n",test_decipher);
 
     //test hash
-    if(hmac(testbuf,len,key,strlen(key),test_hash)) {
-        printf ("Test hmac_sha256 succeeded!\n");
-        printf("Hash value is %s\n",test_hash);
-    } else {
-        printf (" Hash error!\n");
-    }
+//     if(hmac(testbuf,len,key,strlen(key),test_hash)) {
+//         printf ("Test hmac_sha256 succeeded!\n");
+//         for ( i = 0; i < strlen (test_hash); i++) {
+//             	printf("%02x",test_hash[i]);
+//             }
+//             printf("\n");
+//     } else {
+//         printf (" Hash error!\n");
+//     }
+//     
+//     hmac(testbuf,len,key,strlen(key),test_hash2);
+//     if(!memcmp(test_hash,test_hash2,32)) {
+//      	printf (" Hash compare are equal!!!!!\n");
+//     }
 }
 
 void usage()
@@ -181,11 +171,18 @@ int main(int argc, char *argv[])
     struct ifreq ifr;
     int fd, s, fromlen, soutlen, port, PORT, l;
     char c, *p, *ip;
-    char buf[2000];
+    char buf[2000],sendbuf[2000],databuf[2000],tempbuf[2000], hashbuf[32];
     fd_set fdset;
+    int i, crypt_len;
 
-    //hard-coded key
+    //hard-coded key & iv
     unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
+    unsigned char iv[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x10,0x11,0x12,0x13,0x14,0x15,0x16};
+    // printf("hardcoded iv: ");  
+//   	for( i =0;i < strlen(iv); i++)  
+//       	printf("%.02x", iv[i]);  
+// 	printf("\n");
+    
     
     int MODE = 0, TUNMODE = IFF_TUN, DEBUG = 0;
     
@@ -273,16 +270,67 @@ int main(int argc, char *argv[])
             if (DEBUG) write(1,">", 1);
             l = read(fd, buf, sizeof(buf));
             if (l < 0) PERROR("read");
-            if (sendto(s, buf, l, 0, (struct sockaddr *)&from, fromlen) < 0) PERROR("sendto");
+            
+            printf("-----SEND: Original buf:");
+            for( i = 0;i < l; i++)  
+				printf("%.02x", buf[i]);  
+			printf("\n");
+            
+            /* Reconstruct send buf */
+            // 1. iv (length = 16)
+            strncpy(sendbuf, iv, 16);
+            // 2. encrypt data
+			crypt_len = do_crypt(buf, l, tempbuf, key, iv, ENC);
+			if (crypt_len < 0) {
+				/* Crypt Error */
+				PERROR("encrpyt");
+				continue;
+			}
+			printf("-----SEND: crypt_len = %d\n", crypt_len);
+			memcpy(sendbuf + 16, tempbuf, crypt_len);
+            // 3. hash (hash iv + cipher data)  (length = 32)
+            hmac(sendbuf, crypt_len + 16, key, strlen(key), tempbuf);
+            memcpy(sendbuf + 16 + crypt_len, tempbuf, 32);
+            
+            printf("-----SEND: sendbuf length should be = %d\n",crypt_len + 16 + 32);
+            printf("-----SEND: strlen(sendbuf) = %d\n",strlen(sendbuf));
+            printf ("-----SEND: sendbuf:%s\n",sendbuf);
+            
+            if (sendto(s, sendbuf, crypt_len + 16 + 32, 0, (struct sockaddr *)&from, fromlen) < 0) PERROR("sendto");
         } else {
             if (DEBUG) write(1,"<", 1);
             l = recvfrom(s, buf, sizeof(buf), 0, (struct sockaddr *)&sout, &soutlen);
+            printf ("-----RECV: l = %d\n", l);
             if ((sout.sin_addr.s_addr != from.sin_addr.s_addr) || (sout.sin_port != from.sin_port))
                 printf("Got packet from  %s:%i instead of %s:%i\n", 
                        inet_ntoa(sout.sin_addr.s_addr), ntohs(sout.sin_port),
                        inet_ntoa(from.sin_addr.s_addr), ntohs(from.sin_port));
-            if (write(fd, buf, l) < 0) PERROR("write");
+        	
+        	printf ("-----RECV: received buf:%s\n", buf);
+        	
+        	/* Get recv buf */
+        	// 1. get signature
+        	memcpy(hashbuf, buf + l - 32, 32);
+        	// 2. check signature
+        	hmac(buf, l - 32, key, strlen(key), tempbuf);
+			if(!memcmp(hashbuf, tempbuf, 32)) {
+				printf ("-----RECV: Hash compare are equal!\n");
+				memset(tempbuf,0,sizeof(tempbuf));
+				// 3. get iv
+				strncpy(iv, buf, 16);
+				// 4. decrypt data
+				crypt_len = do_crypt(buf + 16, l - 32 - 16, databuf, key, iv, DEC);
+				
+				printf("-----RECV: Original buf:");
+				for( i = 0;i < crypt_len; i++)  
+					printf("%.02x", databuf[i]);  
+				printf("\n");
+			
+				// 5. write decrypted data to fd
+				if (write(fd, databuf, crypt_len) < 0) PERROR("write");	
+			} else {
+				printf ("-----RECV: Hash compare failed, discard!\n");
+			} 
         }
-        
     }
 }
