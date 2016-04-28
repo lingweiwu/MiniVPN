@@ -41,6 +41,23 @@
 
 char MAGIC_WORD[] = "Wazaaaaaaaaaaahhhh !";
 
+unsigned char * rand_N (const int N) {
+    unsigned char seed[N];
+    size_t l;
+    
+    FILE* urandom = fopen("/dev/urandom","r");
+    l = fread(&seed, sizeof(char), N, urandom);
+    if (l == NULL) { printf ("Read from urandom error!\n"); return NULL;}
+    
+    while (l < N) {
+        printf("No enough randomness in urandom. Move your mouse!\n");
+        l = fread(&seed, sizeof(char), N, urandom);
+    }
+
+    fclose(urandom);
+    return seed;
+}
+
 /*
      * Encrypt/decrypt 
      * 
@@ -54,11 +71,6 @@ int do_crypt(char *input, int inlen, char *output, const unsigned char *key, con
     unsigned char outbuf[1024 + EVP_MAX_BLOCK_LENGTH];
     int outlen, padlen;
     EVP_CIPHER_CTX ctx;
-
-    //unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
-    //unsigned char iv[16];
-
-    //memset(iv,0,sizeof(iv));
 
     EVP_CIPHER_CTX_init(&ctx);
     
@@ -94,7 +106,6 @@ int do_crypt(char *input, int inlen, char *output, const unsigned char *key, con
     return outlen;
 }
 
-
 /*
      * the HMAC_SHA256 transform looks like:
      *
@@ -122,43 +133,6 @@ char 				*output)
     return 1;
 }
 
-void test_foo () {
-	//char testbuf[] = "asdfasdfasfdf  afds sdafs";
-	char testbuf[] = "Ishmael believes he has signed onto a routine commission aboard a normal whaling vessel, but he soon learns that Captain Ahab is not guiding the Pequod in the simple pursuit of commerce but is seeking one specific whale, Moby-Dick, a great while whale infamous for his giant size and his ability to destroy the whalers that seek him. Captain Ahab's wooden leg is the result of his first encounter with the whale, when he lost both leg and ship. After the ship sails it becomes clear that Captain Ahab is bent on revenge and he intends to get Moby-Dick.";
-	char test_cipher[1024];
-	char test_decipher[1024];
-	int len, len2, len3, i;
-    char test_hash[32],test_hash2[32];
-
-    unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
-    unsigned char iv[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x10,0x11,0x12,0x13,0x14,0x15,0x16};
-
-	printf("Before cipher, testbuf is %s\n",testbuf);
-
-	len = strlen(testbuf);
-	len2 = do_crypt(testbuf,len, test_cipher, key, iv, ENC);
-	printf("TEST: len2 is %d \n",len2);
-	printf("TEST: After cipher, test_cipher is %s \n",test_cipher);
-	len3 = do_crypt(test_cipher,len2, test_decipher, key, iv, DEC);
-	printf("TEST: After decipher, test_decipher is %s \n",test_decipher);
-
-    //test hash
-//     if(hmac(testbuf,len,key,strlen(key),test_hash)) {
-//         printf ("Test hmac_sha256 succeeded!\n");
-//         for ( i = 0; i < strlen (test_hash); i++) {
-//             	printf("%02x",test_hash[i]);
-//             }
-//             printf("\n");
-//     } else {
-//         printf (" Hash error!\n");
-//     }
-//     
-//     hmac(testbuf,len,key,strlen(key),test_hash2);
-//     if(!memcmp(test_hash,test_hash2,32)) {
-//      	printf (" Hash compare are equal!!!!!\n");
-//     }
-}
-
 void usage()
 {
     fprintf(stderr, "Usage: tunproxy [-s port|-c targetip:port] [-e]\n");
@@ -175,14 +149,24 @@ int main(int argc, char *argv[])
     fd_set fdset;
     int i, crypt_len;
 
-    //hard-coded key & iv
-    unsigned char key[16] = {0x8d,0x20,0xe5,0x05,0x6a,0x8d,0x24,0xd0,0x46,0x2c,0xe7,0x4e,0x49,0x04,0xc1,0xb5};
-    unsigned char iv[16] = {0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x10,0x11,0x12,0x13,0x14,0x15,0x16};
-    // printf("hardcoded iv: ");  
-//   	for( i =0;i < strlen(iv); i++)  
-//       	printf("%.02x", iv[i]);  
-// 	printf("\n");
-    
+	// Generate random key
+	unsigned char key[16];
+	
+	memset(key,0,strlen(key));
+	memcpy(key,rand_N(16),16);
+	while(strlen(key) < 16) {
+        printf("Not enough randomness to generate key, move your mouse!!\n");
+        memcpy(key,rand_N(16),16);
+    }
+//     printf("key generated! length is:%d\n",strlen(key));
+//     printf("Key is : ");
+//     for( i = 0; i < strlen(key); i++)
+//         printf("%.02x", key[i]);
+//     printf("\n");
+
+	// iv
+	unsigned char iv[16];
+	memset(iv,0,strlen(iv));
     
     int MODE = 0, TUNMODE = IFF_TUN, DEBUG = 0;
     
@@ -216,10 +200,6 @@ int main(int argc, char *argv[])
     if (MODE == 0) usage();
     
     if ( (fd = open("/dev/net/tun",O_RDWR)) < 0) PERROR("open");
-
-	////////////////////////TEST
-	//test_foo();
-    ////////////////////////
 
     memset(&ifr, 0, sizeof(ifr));
     ifr.ifr_flags = TUNMODE;
@@ -278,6 +258,12 @@ int main(int argc, char *argv[])
             
             /* Reconstruct send buf */
             // 1. iv (length = 16)
+            memset(iv,0,strlen(iv));
+			memcpy(iv,rand_N(16),16);
+			while(strlen(iv) < 16) {
+				printf("Not enough randomness to generate iv, move your mouse!!\n");
+				memcpy(iv,rand_N(16),16);
+			}
             strncpy(sendbuf, iv, 16);
             // 2. encrypt data
 			crypt_len = do_crypt(buf, l, tempbuf, key, iv, ENC);
