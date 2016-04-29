@@ -4,6 +4,12 @@
 /* mangled to work with SSLeay-0.9.0b and OpenSSL 0.9.2b
    Simplified to be even more minimal
    12/98 - 4/99 Wade Scholine <wades@mail.cybg.com> */
+   
+/* CIS 644 Internet Security final project - MiniVPN
+ * integrated with tunproxy to setup data transmission UDP tunnel with encryption/HMAC
+ * Using IPC to manipulate SSL TCP tunnel & UDP tunnel
+ * 2016/4/29, Lingwei Wu <lwu108@syr.edu>, Syracuse University
+ */
 
 #include <unistd.h>
 #include <stdio.h>
@@ -14,6 +20,15 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <net/if.h>
+#include <linux/if_tun.h>
+#include <getopt.h>
+#include <sys/ioctl.h>
 
 #include <openssl/crypto.h>
 #include <openssl/x509.h>
@@ -53,21 +68,6 @@ int main ()
   SSL_CTX_set_verify(ctx,SSL_VERIFY_PEER,NULL);
   // Set the location of the CA certificate
   SSL_CTX_load_verify_locations(ctx,CACERT,NULL);
-// 
-//   if (SSL_CTX_use_certificate_file(ctx, CERTF, SSL_FILETYPE_PEM) <= 0) {
-// 	  ERR_print_errors_fp(stderr);
-// 	  exit(-2);
-//   }
-//   
-//   if (SSL_CTX_use_PrivateKey_file(ctx, KEYF, SSL_FILETYPE_PEM) <= 0) {
-// 	  ERR_print_errors_fp(stderr);
-// 	  exit(-3);
-//   }
-// 
-//   if (!SSL_CTX_check_private_key(ctx)) {
-// 	  printf("Private key does not match the certificate public keyn");
-// 	  exit(-4);
-//   }
   
   /* ----------------------------------------------- */
   /* Create a socket and connect to server using normal socket calls. */
@@ -76,7 +76,7 @@ int main ()
  
   memset (&sa, '\0', sizeof(sa));
   sa.sin_family      = AF_INET;
-  sa.sin_addr.s_addr = inet_addr ("172.16.20.169");   /* Server IP */
+  sa.sin_addr.s_addr = inet_addr ("172.16.20.177");   /* Server IP */
   sa.sin_port        = htons     (1111);          /* Server Port number */
   
   err = connect(sd, (struct sockaddr*) &sa,
@@ -93,7 +93,6 @@ int main ()
      data exchange to be successful. */
   
   /* Get the cipher - opt */
-
   printf ("SSL connection using %s\n", SSL_get_cipher (ssl));
   
   /* Get server's certificate (note: beware of dynamic allocation) - opt */
@@ -113,8 +112,37 @@ int main ()
 
   /* We could do all sorts of certificate verification stuff here before
      deallocating the certificate. */
-
   X509_free (server_cert);
+  
+  
+  /* Certificate client: send username & password to login */
+  // Get user login input
+  char username[15];
+  char password[15];
+  
+  // "Enter login username:" 
+  err = SSL_read (ssl, buf, sizeof(buf) - 1);				CHK_SSL(err);
+  buf[err] = '\0';
+  printf ("%s\n", buf);  
+  
+  gets(username);
+  err = SSL_write (ssl, username, strlen(username));		CHK_SSL(err);
+  
+  //"Enter password:"
+  err = SSL_read (ssl, buf, sizeof(buf) - 1);				CHK_SSL(err);
+  buf[err] = '\0';
+  printf ("%s\n", buf); 
+  
+  gets(password);
+  err = SSL_write (ssl, password, strlen(password));		CHK_SSL(err);
+	
+  
+  // authentication outcome
+  err = SSL_read (ssl, buf, sizeof(buf) - 1);				CHK_SSL(err);
+  buf[err] = '\0';
+  printf ("%s\n", buf); 
+
+
   
   /* --------------------------------------------------- */
   /* DATA EXCHANGE - Send a message and receive a reply. */
