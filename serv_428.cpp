@@ -5,6 +5,12 @@
 /* mangled to work with SSLeay-0.9.0b and OpenSSL 0.9.2b
    Simplified to be even more minimal
    12/98 - 4/99 Wade Scholine <wades@mail.cybg.com> */
+   
+/* CIS 644 Internet Security final project - MiniVPN
+ * integrated with tunproxy to setup data transmission UDP tunnel with encryption/HMAC
+ * Using IPC to manipulate SSL TCP tunnel & UDP tunnel
+ * 2016/4/29, Lingwei Wu <lwu108@syr.edu>, Syracuse University
+ */
 
 #include <stdio.h>
 #include <unistd.h>
@@ -17,13 +23,22 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <net/if.h>
+#include <linux/if_tun.h>
+#include <getopt.h>
+#include <sys/ioctl.h>
+
 #include <openssl/rsa.h>       /* SSLeay stuff */
 #include <openssl/crypto.h>
 #include <openssl/x509.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-
+#include "openssl/sha.h"
 
 /* define HOME to be dir for key and cert files... */
 #define HOME "./"
@@ -32,10 +47,35 @@
 #define KEYF  HOME  "server.key"
 #define CACERT HOME "ca.crt"
 
+#define HASHLEN 32
+#define SALTLEN 5
 
 #define CHK_NULL(x) if ((x)==NULL) exit (1)
 #define CHK_ERR(err,s) if ((err)==-1) { perror(s); exit(1); }
 #define CHK_SSL(err) if ((err)==-1) { ERR_print_errors_fp(stderr); exit(2); }
+
+int sha256(char *input, unsigned char *output)
+{
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX ctx;
+    SHA256_Init(&ctx);  
+    if(!SHA256_Update(&ctx, input, strlen(input))) return 0;
+    if(!SHA256_Final(hash, &ctx)) return 0;
+    
+    printf("SHA256,strlen(hash):%d\n",strlen(hash));
+    strncpy(output,hash,HASHLEN);
+    printf("SHA256,strlen(output):%d\n",strlen(output));
+    
+    
+    int i = 0;
+    for(i = 0;i < HASHLEN ; i++) {
+    	printf("%02x",output[i]);
+    }
+    printf("\n");
+    return 1;
+
+}
+
 
 int main ()
 {
@@ -51,6 +91,7 @@ int main ()
   char*    str;
   char     buf [4096];
   SSL_METHOD *meth;
+  int i;
   
   /* SSL preliminaries. We keep the certificate and key with the context. */
 
@@ -115,33 +156,94 @@ int main ()
   err = SSL_accept (ssl);                        CHK_SSL(err);
   
   /* Get the cipher - opt */
-  
   printf ("SSL connection using %s\n", SSL_get_cipher (ssl));
   
-  /* Get client's certificate (note: beware of dynamic allocation) - opt */
+  /* Get client's certificate ( username & password login) */
+  FILE *fp;
+  char username[15]; //client input
+  char password[15]; // client input
+  
+  char fuser[15]; // in database
+  char fsalt[SALTLEN]; // in database
+  char fpwd[HASHLEN]; // in database
+  
+  char hass_password[HASHLEN]; // using sha256, 32 byte
+  
+  fp = fopen("login.txt","r");
+  if (fp == NULL) {
+  		printf("Open file failed.\n");
+        exit(EXIT_FAILURE);
+  }
+  
+  // Receive client username & check user exist
+  err = SSL_write (ssl, "Enter login username:", strlen("Enter login username:"));  CHK_SSL(err);
+  err = SSL_read (ssl, username, sizeof(username) - 1);                     		CHK_SSL(err);
+  username[err] = '\0';
+  
+  int flag = 0;
+  while( fscanf(fp, "%s %s %s", fuser, fsalt, fpwd) != EOF) {
+  		if ( strcmp(username, fuser) == 0) {
+  			flag = 1;
+  			printf("User exist in database!\n");
+  			printf("User %s, salt %s, hashed pass:%s\n",fuser,fsalt,fpwd);
+  			break;
+  		}
+  }
+  
+  if (flag == 0) {
+  	printf(" User doesn't exist!");
+  	close(sd);
+  	SSL_free(ssl);
+  	exit(1);
+  }
+  fclose(fp);
+  
+  // Receive client password
+  err = SSL_write (ssl, "Enter password:", strlen("Enter password:"));  			CHK_SSL(err);
+  err = SSL_read (ssl, password, sizeof(password) - 1);                     		CHK_SSL(err);
+  password[err] = '\0';
+  char tmptohash[30]; // (salt + password), to be hashed
+  strcpy(tmptohash, fsalt);
+  strcat(tmptohash, password);
 
-//   client_cert = SSL_get_peer_certificate (ssl);
-//   if (client_cert != NULL) {
-//     printf ("Client certificate:\n");
-//     
-//     str = X509_NAME_oneline (X509_get_subject_name (client_cert), 0, 0);
-//     CHK_NULL(str);
-//     printf ("\t subject: %s\n", str);
-//     OPENSSL_free (str);
-//     
-//     str = X509_NAME_oneline (X509_get_issuer_name  (client_cert), 0, 0);
-//     CHK_NULL(str);
-//     printf ("\t issuer: %s\n", str);
-//     OPENSSL_free (str);
-//     
-//     /* We could do all sorts of certificate verification stuff here before
-//        deallocating the certificate. */
-//     
-//     X509_free (client_cert);
-//   } else
-//     printf ("Client does not have certificate.\n");
+  unsigned char temphash[HASHLEN];  // result of hash(salt + password)
+  sha256(tmptohash, temphash);
+  
+  char fbuff[250];
+  int cmp = 0;
+  
+  fp = fopen("tmp", "w+");
+  for( i = 0; i < HASHLEN; i++) {
+  	fprintf(fp, "%02x", temphash[i]); // Converting temphash(user input's hash) to characters in txt, for comparing purpose
+  } 
+  fprintf(fp, "\n");
+  fclose(fp);
+  
+  fp = fopen("tmp", "r");
+  fscanf(fp, "%s", fbuff);
+  fclose(fp);
+  
+  // Comparing pwd hash values
+  for(i = 0; i < HASHLEN; i++) {
+  	if (fbuff[i] != fpwd[i]) {
+  		printf("Mismatch at %c and %c",fbuff[i],fpwd[i]);
+  		cmp = 1;
+  	}
+  }
+  
+  if (cmp == 1) {
+  	err = SSL_write (ssl, "Wrong password! ", strlen("Wrong password!"));  			CHK_SSL(err);
+  	printf("Wrong password for user.\n");
+  	close(sd);
+  	SSL_free(ssl);
+  	exit(1);
+  } 
+  
+  err = SSL_write (ssl, "Client authentication succeed!", strlen("Client authentication succeed!"));  			CHK_SSL(err);
+  
 
-  /* DATA EXCHANGE - Receive message and send reply. */
+
+
 
   err = SSL_read (ssl, buf, sizeof(buf) - 1);                   CHK_SSL(err);
   buf[err] = '\0';
